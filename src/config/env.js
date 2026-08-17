@@ -11,7 +11,7 @@ function required(name, fallback) {
 module.exports = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: Number(process.env.PORT) || 4000,
-  clientUrl: process.env.CLIENT_URL || "http://localhost:5173",
+  clientUrl: required("CLIENT_URL", "http://localhost:5173"),
   databaseUrl: required("DATABASE_URL"),
   jwt: {
     secret: required("JWT_SECRET"),
