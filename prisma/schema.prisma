@@ -1,0 +1,743 @@
+// ============================================================================
+// IBWISE Learning Platform — Database Schema
+// PostgreSQL via Prisma. Mirrors proposal §12 (Database Requirements).
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  TEACHER
+  STUDENT
+  PARENT
+}
+
+enum AssignmentStatus {
+  DRAFT
+  PUBLISHED
+  CLOSED
+}
+
+enum SubmissionStatus {
+  PENDING
+  SUBMITTED
+  LATE
+  REVIEWED
+  GRADED
+}
+
+enum BlogStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  REJECTED
+}
+
+enum NotificationType {
+  ASSIGNMENT_NEW
+  DEADLINE_REMINDER
+  SUBMISSION_RECEIVED
+  GRADED
+  ANNOUNCEMENT
+  BLOG_APPROVED
+  LIVE_SESSION
+}
+
+enum AnnouncementAudience {
+  ALL
+  ADMIN
+  TEACHER
+  STUDENT
+  PARENT
+}
+
+// The three tracks IBWISE offers. Each Class belongs to exactly one —
+// this is what lets /academics show CBC, Cambridge and Diploma as separate
+// pathways while everything downstream (assignments, grading, fees) works
+// the same way regardless of track.
+enum CurriculumType {
+  CBC
+  CAMBRIDGE
+  DIPLOMA
+}
+
+enum InvoiceStatus {
+  UNPAID
+  PARTIAL
+  PAID
+  OVERDUE
+}
+
+enum PaymentMethod {
+  MPESA
+  BANK
+  CASH
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+enum InquiryStatus {
+  NEW
+  RESPONDED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+enum LessonContentType {
+  NOTE
+  VIDEO
+  FILE
+  LINK
+}
+
+enum LiveSessionStatus {
+  SCHEDULED
+  LIVE
+  ENDED
+  CANCELLED
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         Role
+  firstName    String
+  lastName     String
+  phone        String?
+  avatarUrl    String?
+  isActive     Boolean  @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  student      Student?
+  teacher      Teacher?
+  parent       Parent?
+
+  blogPosts     BlogPost[]      @relation("BlogAuthor")
+  comments      Comment[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+  announcements Announcement[]  @relation("AnnouncementAuthor")
+  uploadedMedia Media[]         @relation("MediaUploader")
+
+  @@index([role])
+  @@map("users")
+}
+
+model Student {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  admissionNo  String   @unique
+  dateOfBirth  DateTime?
+  classId      String?
+  class        Class?   @relation(fields: [classId], references: [id])
+  createdAt    DateTime @default(now())
+
+  parents      ParentStudent[]
+  enrollments  Enrollment[]
+  submissions  Submission[]
+  invoices     Invoice[]
+  attendance   Attendance[]
+
+  @@map("students")
+}
+
+model Teacher {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  staffNo   String   @unique
+  bio       String?
+  // Self-registered teacher accounts start unapproved (see auth.service.js) —
+  // an admin must approve before the account can log in. Admin-created
+  // teachers (via Users module) are approved immediately.
+  isApproved Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  courses      Course[]
+  assignments  Assignment[]
+  grades       Grade[]
+  feedback     Feedback[]
+  homeroomOf   Class[]      @relation("HomeroomTeacher")
+  lessons      Lesson[]
+  attendanceMarked Attendance[]
+  liveSessions LiveSession[]
+
+  @@map("teachers")
+}
+
+model Parent {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  children  ParentStudent[]
+
+  @@map("parents")
+}
+
+// Explicit join so a parent can be linked to more than one child (siblings)
+model ParentStudent {
+  id        String  @id @default(cuid())
+  parentId  String
+  parent    Parent  @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([parentId, studentId])
+  @@map("parent_students")
+}
+
+// ---------------------------------------------------------------------------
+// Academics
+// ---------------------------------------------------------------------------
+
+model Class {
+  id                String          @id @default(cuid())
+  name              String          // e.g. "Grade 7", "IGCSE Year 10", "Diploma in Business Year 1"
+  curriculum        CurriculumType  @default(CBC)
+  levelName         String?         // e.g. "Junior Secondary", "Cambridge Lower Secondary", "Year 1"
+  homeroomTeacherId String?
+  homeroomTeacher   Teacher?        @relation("HomeroomTeacher", fields: [homeroomTeacherId], references: [id])
+  createdAt         DateTime        @default(now())
+
+  students     Student[]
+  courses      Course[]
+  feeStructures FeeStructure[]
+
+  @@index([curriculum])
+  @@map("classes")
+}
+
+model Subject {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  code      String   @unique
+  createdAt DateTime @default(now())
+
+  courses Course[]
+
+  @@map("subjects")
+}
+
+// A Course = a Subject taught to a specific Class by a specific Teacher.
+// This is what proposal §12 refers to as "courses" linking classes/subjects/teachers.
+model Course {
+  id        String   @id @default(cuid())
+  classId   String
+  class     Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subjectId String
+  subject   Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacherId String
+  teacher   Teacher  @relation(fields: [teacherId], references: [id])
+  createdAt DateTime @default(now())
+
+  enrollments Enrollment[]
+  assignments Assignment[]
+  lessons     Lesson[]
+  attendance  Attendance[]
+  liveSessions LiveSession[]
+
+  @@unique([classId, subjectId])
+  @@map("courses")
+}
+
+model Enrollment {
+  id         String   @id @default(cuid())
+  studentId  String
+  student    Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  courseId   String
+  course     Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  enrolledAt DateTime @default(now())
+
+  @@unique([studentId, courseId])
+  @@map("enrollments")
+}
+
+// Teacher-published class content — separate from Assignments, which are
+// graded work. A lesson is "here's what we covered / here's a resource",
+// no submission or grade attached.
+model Lesson {
+  id          String            @id @default(cuid())
+  courseId    String
+  course      Course            @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  teacherId   String
+  teacher     Teacher           @relation(fields: [teacherId], references: [id])
+  title       String
+  contentType LessonContentType @default(NOTE)
+  body        String?           // for NOTE
+  url         String?           // for VIDEO / FILE / LINK
+  createdAt   DateTime          @default(now())
+
+  @@index([courseId])
+  @@map("lessons")
+}
+
+// A scheduled or in-progress live class for a course — students join
+// through an embedded Jitsi Meet room keyed by `roomName`, no separate
+// video infra required.
+model LiveSession {
+  id          String             @id @default(cuid())
+  courseId    String
+  course      Course             @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  teacherId   String
+  teacher     Teacher            @relation(fields: [teacherId], references: [id])
+  title       String
+  roomName    String             @unique
+  scheduledAt DateTime
+  startedAt   DateTime?
+  endedAt     DateTime?
+  status      LiveSessionStatus  @default(SCHEDULED)
+  createdAt   DateTime           @default(now())
+
+  @@index([courseId])
+  @@index([status])
+  @@map("live_sessions")
+}
+
+// One row per student per course per day.
+model Attendance {
+  id        String           @id @default(cuid())
+  courseId  String
+  course    Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  studentId String
+  student   Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  teacherId String
+  teacher   Teacher          @relation(fields: [teacherId], references: [id])
+  date      DateTime         @db.Date
+  status    AttendanceStatus @default(PRESENT)
+  createdAt DateTime         @default(now())
+
+  @@unique([courseId, studentId, date])
+  @@index([studentId])
+  @@map("attendance")
+}
+
+// ---------------------------------------------------------------------------
+// Assignments & submissions
+// ---------------------------------------------------------------------------
+
+model Assignment {
+  id           String           @id @default(cuid())
+  title        String
+  description  String?
+  instructions String?
+  courseId     String
+  course       Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  teacherId    String
+  teacher      Teacher          @relation(fields: [teacherId], references: [id])
+  dueDate      DateTime
+  status       AssignmentStatus @default(DRAFT)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  attachments AssignmentAttachment[]
+  submissions Submission[]
+  rubric      Rubric?
+
+  @@index([courseId])
+  @@index([status])
+  @@map("assignments")
+}
+
+model AssignmentAttachment {
+  id           String     @id @default(cuid())
+  assignmentId String
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  url          String
+  filename     String
+  fileType     String?
+  size         Int?
+  createdAt    DateTime   @default(now())
+
+  @@map("assignment_attachments")
+}
+
+model Submission {
+  id           String            @id @default(cuid())
+  assignmentId String
+  assignment   Assignment        @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  studentId    String
+  student      Student           @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  content      String?
+  status       SubmissionStatus  @default(PENDING)
+  submittedAt  DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  files    SubmissionFile[]
+  grade    Grade?
+  feedback Feedback[]
+
+  @@unique([assignmentId, studentId])
+  @@index([status])
+  @@map("submissions")
+}
+
+model SubmissionFile {
+  id           String     @id @default(cuid())
+  submissionId String
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  url          String
+  filename     String
+  fileType     String?
+  size         Int?
+  createdAt    DateTime   @default(now())
+
+  @@map("submission_files")
+}
+
+model Grade {
+  id           String     @id @default(cuid())
+  submissionId String     @unique
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  teacherId    String
+  teacher      Teacher    @relation(fields: [teacherId], references: [id])
+  score        Float
+  maxScore     Float      @default(100)
+  letter       String?
+  gradedAt     DateTime   @default(now())
+
+  rubricScores RubricScore[]
+
+  @@map("grades")
+}
+
+model Feedback {
+  id           String     @id @default(cuid())
+  submissionId String
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  teacherId    String
+  teacher      Teacher    @relation(fields: [teacherId], references: [id])
+  comment      String
+  createdAt    DateTime   @default(now())
+
+  @@map("feedback")
+}
+
+// Advanced grading: a teacher defines weighted criteria once per
+// assignment; grading against it scores each criterion separately and
+// sums to the submission's overall score, instead of one holistic number.
+model Rubric {
+  id           String   @id @default(cuid())
+  assignmentId String   @unique
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  title        String   @default("Grading rubric")
+  createdAt    DateTime @default(now())
+
+  criteria RubricCriterion[]
+
+  @@map("rubrics")
+}
+
+model RubricCriterion {
+  id          String  @id @default(cuid())
+  rubricId    String
+  rubric      Rubric  @relation(fields: [rubricId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  maxPoints   Float
+  order       Int     @default(0)
+
+  scores RubricScore[]
+
+  @@map("rubric_criteria")
+}
+
+// One row per (grade, criterion) — the points a teacher awarded on that
+// criterion for a specific submission, plus an optional per-criterion note.
+model RubricScore {
+  id          String          @id @default(cuid())
+  gradeId     String
+  grade       Grade           @relation(fields: [gradeId], references: [id], onDelete: Cascade)
+  criterionId String
+  criterion   RubricCriterion @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+  points      Float
+  comment     String?
+
+  @@unique([gradeId, criterionId])
+  @@map("rubric_scores")
+}
+
+// ---------------------------------------------------------------------------
+// Content: blog, comments, events, announcements
+// ---------------------------------------------------------------------------
+
+model BlogCategory {
+  id    String @id @default(cuid())
+  name  String @unique
+  slug  String @unique
+
+  posts BlogPost[]
+
+  @@map("blog_categories")
+}
+
+model BlogPost {
+  id            String       @id @default(cuid())
+  title         String
+  slug          String       @unique
+  authorId      String
+  author        User         @relation("BlogAuthor", fields: [authorId], references: [id])
+  categoryId    String?
+  category      BlogCategory? @relation(fields: [categoryId], references: [id])
+  featuredImage String?
+  body          String
+  tags          String[]     @default([])
+  status        BlogStatus   @default(DRAFT)
+  publishedAt   DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  comments Comment[]
+
+  @@index([status])
+  @@map("blog_posts")
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  postId    String
+  post      BlogPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorId  String?
+  author    User?    @relation(fields: [authorId], references: [id])
+  guestName String?
+  guestEmail String?
+  body      String
+  approved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@map("comments")
+}
+
+model Event {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  location    String?
+  tag         String?
+  startsAt    DateTime
+  endsAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  @@map("events")
+}
+
+model Announcement {
+  id        String               @id @default(cuid())
+  title     String
+  body      String
+  audience  AnnouncementAudience @default(ALL)
+  authorId  String
+  author    User                 @relation("AnnouncementAuthor", fields: [authorId], references: [id])
+  createdAt DateTime             @default(now())
+
+  @@map("announcements")
+}
+
+// ---------------------------------------------------------------------------
+// Platform plumbing
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id        String            @id @default(cuid())
+  userId    String
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String?
+  read      Boolean           @default(false)
+  createdAt DateTime          @default(now())
+
+  @@index([userId, read])
+  @@map("notifications")
+}
+
+// Generic file/media record — actual bytes live in object storage (Cloudinary/S3/Supabase),
+// this table stores the pointer + metadata (see proposal §14).
+model Media {
+  id             String   @id @default(cuid())
+  url            String
+  filename       String
+  mimeType       String?
+  size           Int?
+  uploadedById   String
+  uploadedBy     User     @relation("MediaUploader", fields: [uploadedById], references: [id])
+  createdAt      DateTime @default(now())
+
+  @@map("media")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String   // e.g. "assignment.create", "user.deactivate"
+  entity    String   // e.g. "Assignment"
+  entityId  String?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value Json
+
+  @@map("settings")
+}
+
+// Captures the public "chat with admissions" widget on the marketing site —
+// a lightweight inbox for visitors who aren't logged in, distinct from the
+// authenticated Conversation/Message system above.
+model Inquiry {
+  id        String        @id @default(cuid())
+  name      String
+  email     String
+  phone     String?
+  message   String
+  status    InquiryStatus @default(NEW)
+  createdAt DateTime      @default(now())
+
+  @@index([status])
+  @@map("inquiries")
+}
+
+// ---------------------------------------------------------------------------
+// Fees & payments
+// ---------------------------------------------------------------------------
+
+// The published fee amount for a class + term — what admin sets once per
+// term, and what invoices are generated from.
+model FeeStructure {
+  id        String   @id @default(cuid())
+  classId   String
+  class     Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  term      String   // e.g. "Term 2 2026"
+  amount    Float
+  dueDate   DateTime
+  createdAt DateTime @default(now())
+
+  invoices Invoice[]
+
+  @@unique([classId, term])
+  @@map("fee_structures")
+}
+
+// One invoice per student per term, generated from their class's FeeStructure.
+// balance is denormalized (recomputed on each payment) so "how much is owed"
+// is a single read, not a sum-over-payments query on every dashboard load.
+model Invoice {
+  id             String        @id @default(cuid())
+  studentId      String
+  student        Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  feeStructureId String
+  feeStructure   FeeStructure  @relation(fields: [feeStructureId], references: [id])
+  amount         Float
+  balance        Float
+  status         InvoiceStatus @default(UNPAID)
+  dueDate        DateTime
+  createdAt      DateTime      @default(now())
+
+  payments Payment[]
+
+  @@unique([studentId, feeStructureId])
+  @@index([status])
+  @@map("invoices")
+}
+
+// A payment attempt against an invoice. For M-Pesa this starts PENDING the
+// moment an STK push is sent, then flips to COMPLETED/FAILED when Safaricom's
+// callback hits /api/fees/mpesa/callback (see fees.service.js).
+model Payment {
+  id                  String        @id @default(cuid())
+  invoiceId           String
+  invoice             Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  studentId           String
+  amount              Float
+  method              PaymentMethod @default(MPESA)
+  phone               String?
+  mpesaCheckoutRequestId String?    @unique
+  mpesaReceiptNumber  String?
+  status              PaymentStatus @default(PENDING)
+  createdAt           DateTime      @default(now())
+  completedAt         DateTime?
+
+  @@index([status])
+  @@map("payments")
+}
+
+// ---------------------------------------------------------------------------
+// Messaging
+// ---------------------------------------------------------------------------
+
+// Deliberately plain REST, not sockets — polled from the frontend (see
+// frontend/src/hooks/usePolling.js). Swapping to real-time later means
+// adding a Socket.io layer that emits on the same Message rows; the schema
+// doesn't need to change.
+model Conversation {
+  id        String   @id @default(cuid())
+  isGroup   Boolean  @default(false)
+  title     String?  // set for group conversations (e.g. "Grade 7 Mathematics")
+  createdAt DateTime @default(now())
+
+  participants ConversationParticipant[]
+  messages     Message[]
+
+  @@map("conversations")
+}
+
+model ConversationParticipant {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String
+  joinedAt       DateTime     @default(now())
+  lastReadAt     DateTime?
+
+  @@unique([conversationId, userId])
+  @@map("conversation_participants")
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  body           String
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
