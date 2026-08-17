@@ -34,6 +34,8 @@ const rubricsRoutes = require("./modules/rubrics/rubrics.routes");
 
 const app = express();
 
+// 1. ADD THIS LINE RIGHT HERE (Crucial for Railway/Vercel proxies)
+app.set('trust proxy', 1); 
 app.use(helmet());
 app.use(cors({ origin: clientUrl, credentials: true }));
 app.use(express.json());
